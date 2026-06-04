@@ -1,0 +1,14 @@
+# Secrets — never commit these
+.env
+.mcp.json
+credentials.json
+*-service-account.json
+*.key.json
+
+# Logs
+*.log
+
+# OS / tooling
+.DS_Store
+Thumbs.db
+node_modules/

@@ -1,0 +1,119 @@
+{
+  "name": "03 — Error Alerts",
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "executionTimeout": 300
+  },
+  "nodes": [
+    {
+      "id": "node-trigger",
+      "name": "Error Trigger",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "parameters": {}
+    },
+    {
+      "id": "node-format",
+      "name": "Format Error Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "console.log('FormatErrorRow start');\nconst err = $input.first().json;\nconst sensitive = /token|key|password|secret|bearer|auth/i;\nconst sanitize = (obj) => {\n  if (typeof obj !== 'object' || obj === null) return obj;\n  if (Array.isArray(obj)) return obj.map(sanitize);\n  return Object.fromEntries(Object.entries(obj).map(([k, v]) =>\n    [k, sensitive.test(k) ? '[REDACTED]' : sanitize(v)]));\n};\nconst payload = JSON.stringify(sanitize(err.execution?.data ?? {})).slice(0, 500);\nconst now = new Date().toISOString();\nconst execId = String(err.execution?.id ?? '');\nconst workflowId = String(err.workflow?.id ?? '');\nconst executionUrl = (workflowId && execId)\n  ? `https://onewinnerfourtytwoloosers.app.n8n.cloud/workflow/${workflowId}/executions/${execId}`\n  : '';\nconsole.log('FormatErrorRow done:', err.workflow?.name, 'node:', err.execution?.lastNodeExecuted);\nreturn [{ json: {\n  timestamp: now,\n  workflow_id: workflowId,\n  workflow_name: String(err.workflow?.name ?? ''),\n  node: String(err.execution?.lastNodeExecuted ?? ''),\n  error_text: String(err.execution?.error?.message ?? '').slice(0, 500),\n  payload,\n  execution_url: executionUrl\n}}];"
+      }
+    },
+    {
+      "id": "node-append",
+      "name": "Append Error Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [700, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "vPYba8prk7sfff5g",
+          "name": "Google Sheets account"
+        }
+      },
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1cNcXDPgsVdgmtrnBr6NLNJsyEO3Zhrt5eHvcmJqPpAk",
+          "cachedResultName": "Lead Automation Sheets"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "_errors",
+          "cachedResultName": "_errors"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "workflow_id": "={{ $json.workflow_id }}",
+            "workflow_name": "={{ $json.workflow_name }}",
+            "node": "={{ $json.node }}",
+            "error_text": "={{ $json.error_text }}",
+            "payload": "={{ $json.payload }}"
+          },
+          "schema": [
+            { "id": "timestamp", "type": "string", "display": true, "required": false, "displayName": "timestamp", "defaultMatch": false, "canBeUsedToMatch": true },
+            { "id": "workflow_id", "type": "string", "display": true, "required": false, "displayName": "workflow_id", "defaultMatch": false, "canBeUsedToMatch": true },
+            { "id": "workflow_name", "type": "string", "display": true, "required": false, "displayName": "workflow_name", "defaultMatch": false, "canBeUsedToMatch": true },
+            { "id": "node", "type": "string", "display": true, "required": false, "displayName": "node", "defaultMatch": false, "canBeUsedToMatch": true },
+            { "id": "error_text", "type": "string", "display": true, "required": false, "displayName": "error_text", "defaultMatch": false, "canBeUsedToMatch": true },
+            { "id": "payload", "type": "string", "display": true, "required": false, "displayName": "payload", "defaultMatch": false, "canBeUsedToMatch": true }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node-email",
+      "name": "Send Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [950, 300],
+      "credentials": {
+        "smtp": {
+          "id": "JeOMZkGm0aM2IwRG",
+          "name": "Gmail SMTP App Password"
+        }
+      },
+      "parameters": {
+        "resource": "email",
+        "operation": "send",
+        "fromEmail": "vasilikartem@gmail.com",
+        "toEmail": "vasilikartem@gmail.com",
+        "subject": "=[n8n Error] {{ $json.workflow_name }} — {{ $json.node }} — {{ $json.timestamp.slice(0,16) }}",
+        "emailFormat": "text",
+        "text": "=Workflow: {{ $json.workflow_name }} (ID: {{ $json.workflow_id }})\nNode: {{ $json.node }}\nTime: {{ $json.timestamp }}\nError: {{ $json.error_text }}\n\nPayload (sanitized):\n{{ $json.payload }}\n\nExecution URL: {{ $json.execution_url }}",
+        "options": {
+          "appendAttribution": false
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Error Trigger": {
+      "main": [[{ "node": "Format Error Row", "type": "main", "index": 0 }]]
+    },
+    "Format Error Row": {
+      "main": [[{ "node": "Append Error Row", "type": "main", "index": 0 }]]
+    },
+    "Append Error Row": {
+      "main": [[{ "node": "Send Alert", "type": "main", "index": 0 }]]
+    }
+  }
+}

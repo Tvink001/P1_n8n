@@ -1,0 +1,279 @@
+{
+  "name": "01 — New Lead Processing (AI + Smart Routing)",
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "executionTimeout": 300,
+    "errorWorkflow": "xUPMrswt8FvHxKYU"
+  },
+  "nodes": [
+    {
+      "id": "node-trigger",
+      "name": "Sheets Trigger",
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [200, 300],
+      "credentials": { "googleSheetsTriggerOAuth2Api": { "id": "qEKqA8Kw3WPO0o19", "name": "Google Sheets Trigger account" } },
+      "parameters": {
+        "documentId": { "__rl": true, "mode": "id", "value": "1cNcXDPgsVdgmtrnBr6NLNJsyEO3Zhrt5eHvcmJqPpAk", "cachedResultName": "Lead Automation Sheets" },
+        "sheetName": { "__rl": true, "mode": "id", "value": "589358449", "cachedResultName": "leads" },
+        "event": "anyUpdate"
+      }
+    },
+    {
+      "id": "node-config",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [200, 600],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "vPYba8prk7sfff5g", "name": "Google Sheets account" } },
+      "parameters": {
+        "resource": "sheet", "operation": "read",
+        "documentId": { "__rl": true, "mode": "id", "value": "1cNcXDPgsVdgmtrnBr6NLNJsyEO3Zhrt5eHvcmJqPpAk", "cachedResultName": "Lead Automation Sheets" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "_config", "cachedResultName": "_config" },
+        "range": "A:F", "options": {}
+      }
+    },
+    {
+      "id": "node-validate",
+      "name": "Validate Fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "console.log('ValidateFields start');\nconst items = $('Sheets Trigger').all();\nconst required = ['name', 'phone', 'email', 'message', 'budget'];\nconst valid = [];\nfor (const item of items) {\n  const d = item.json;\n  const missing = required.filter(f => !String(d[f] ?? '').trim());\n  if (missing.length) {\n    console.log('ValidateFields skip (missing ' + missing.join(',') + '):', d.email || d.name || '(unknown)');\n    continue;\n  }\n  valid.push({ json: d });\n}\nconsole.log('ValidateFields done, valid:', valid.length, 'of', items.length);\n// Empty batch = silently skip (partial row mid-typing). Don't throw — throwing wakes WF03 for what's really user-side typing.\nreturn valid;"
+      }
+    },
+    {
+      "id": "node-normalize",
+      "name": "Normalize",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "console.log('Normalize start');\nconst items = $input.all();\nconst normalized = items.map(item => {\n  const d = { ...item.json };\n  const digits = String(d.phone || '').replace(/\\D/g, '');\n  if (digits.startsWith('380') && digits.length === 12) d.phone = '+' + digits;\n  else if (digits.startsWith('0') && digits.length === 10) d.phone = '+38' + digits;\n  else if (digits.length === 9) d.phone = '+380' + digits;\n  d.email = String(d.email || '').toLowerCase().trim();\n  d.name = String(d.name || '').trim();\n  return { json: d };\n});\nconsole.log('Normalize done, count:', normalized.length);\nreturn normalized;"
+      }
+    },
+    {
+      "id": "node-get-rows",
+      "name": "Get All Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [950, 300],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "vPYba8prk7sfff5g", "name": "Google Sheets account" } },
+      "parameters": {
+        "resource": "sheet", "operation": "read",
+        "documentId": { "__rl": true, "mode": "id", "value": "1cNcXDPgsVdgmtrnBr6NLNJsyEO3Zhrt5eHvcmJqPpAk", "cachedResultName": "Lead Automation Sheets" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "leads", "cachedResultName": "leads" },
+        "range": "A:R", "options": {}
+      }
+    },
+    {
+      "id": "node-split-leads",
+      "name": "Split Leads",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1075, 300],
+      "parameters": { "batchSize": 1, "options": {} }
+    },
+    {
+      "id": "node-check-dup",
+      "name": "Check Duplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "console.log('CheckDuplicate start');\nconst lead = $input.first().json;\nconst rows = $('Get All Rows').all();\nconst email = lead.email?.toLowerCase() || '';\n\nconst matches = rows.filter(r => r.json.email?.toLowerCase() === email);\n\n// Find current lead's row (highest row_number among matches)\nconst currentRow = matches.reduce((max, r) =>\n  (!max || Number(r.json.row_number) > Number(max.json.row_number)) ? r : max, null);\nconst row_number = currentRow?.json.row_number ?? null;\n\n// Skip if this row was already processed (telegram_message_id populated)\nconst tmid = currentRow?.json.telegram_message_id;\nconst alreadyProcessed = tmid !== undefined && tmid !== null && String(tmid).trim() !== '';\n\n// Or skip if multiple rows share this email (older duplicates)\nconst isDuplicateEmail = matches.length > 1;\n\nconst isDuplicate = alreadyProcessed || isDuplicateEmail;\n\nconsole.log('CheckDuplicate:', email, 'isDup:', isDuplicate, 'alreadyProcessed:', alreadyProcessed, 'emailMatches:', matches.length, 'row_number:', row_number);\nreturn [{ json: { ...lead, isDuplicate, row_number } }];"
+      }
+    },
+    {
+      "id": "node-if-dup",
+      "name": "Is Duplicate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [1450, 300],
+      "parameters": {
+        "conditions": {
+          "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" },
+          "combinator": "and",
+          "conditions": [
+            { "id": "dup-check-001", "operator": { "type": "boolean", "operation": "true", "singleValue": true }, "leftValue": "={{ $json.isDuplicate }}", "rightValue": "" }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node-skip",
+      "name": "Skip Duplicate",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [1700, 100],
+      "parameters": {}
+    },
+    {
+      "id": "node-qualify",
+      "name": "Qualify Lead",
+      "type": "@n8n/n8n-nodes-langchain.anthropic",
+      "typeVersion": 1,
+      "position": [1700, 500],
+      "credentials": { "anthropicApi": { "id": "09N35JJ0R0zrY1rS", "name": "Anthropic account" } },
+      "parameters": {
+        "resource": "text", "operation": "message",
+        "modelId": { "__rl": true, "mode": "id", "value": "claude-haiku-4-5" },
+        "messages": { "values": [ { "content": "=Message: {{ $json.message }}\nBudget: {{ $json.budget }}", "role": "user" } ] },
+        "simplify": false,
+        "options": {
+          "system": "You score sales leads. Output strict JSON only — no prose, no markdown, no code fences.\nFormat: {\"score\": <int 1-10>, \"category\": \"hot\"|\"warm\"|\"cold\", \"reason\": \"<10 words max>\"}\n\nCategories:\n- hot (score 8-10): strong intent + good budget (urgent, ASAP, need, want, \"хочу\", \"потрібен\")\n- warm (score 4-7): moderate interest and/or budget\n- cold (score 1-3): vague, low budget, browsing (\"just looking\", \"maybe\", \"later\", \"цікавлюсь\", \"можливо\")\n\nHigher budget tier weighs heavily ($5000+ rarely scores below 6). Match the user's language; \"reason\" can be in English, Ukrainian, or Russian.",
+          "maxTokens": 256,
+          "temperature": 0
+        }
+      }
+    },
+    {
+      "id": "node-parse-ai",
+      "name": "Parse AI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1950, 500],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "console.log('ParseAI start');\nconst inp = $input.first().json;\nconst raw = inp?.content?.[0]?.text\n  || inp?.message?.content?.[0]?.text\n  || (typeof inp?.content === 'string' ? inp.content : '')\n  || inp?.text\n  || '';\n\nlet result;\ntry {\n  const cleaned = String(raw).replace(/```json\\n?|\\n?```/g, '').trim();\n  result = JSON.parse(cleaned);\n  if (typeof result.score !== 'number' || !result.category || !result.reason) {\n    throw new Error('incomplete fields');\n  }\n  result.score = Math.max(1, Math.min(10, Math.round(result.score)));\n  if (!['hot','warm','cold'].includes(result.category)) result.category = 'cold';\n} catch (e) {\n  console.log('ParseAI fallback:', e.message, 'raw:', String(raw).slice(0, 120));\n  result = { score: 0, category: 'cold', reason: 'parse_error' };\n}\n\nconst lead = $('Check Duplicate').first().json;\nconsole.log('ParseAI done:', result.category, result.score);\nreturn [{ json: { ...lead, score: result.score, category: result.category, reason: result.reason } }];"
+      }
+    },
+    {
+      "id": "node-format",
+      "name": "Format Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2200, 500],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "console.log('FormatMessage start');\nconst d = $input.first().json;\nconst ts = new Date(d.timestamp).toLocaleString('ru-RU', { timeZone: 'Europe/Kyiv' });\nconst icons = { hot: '🔥', warm: '🟡', cold: '⚪' };\nconst labels = { hot: 'Горячий', warm: 'Тёплый', cold: 'Холодный' };\nconst score = Number(d.score) || 0;\nconst cat = d.category || 'cold';\nconst reason = d.reason || '';\nconst header = score > 0\n  ? `${icons[cat] || '⚪'} *${labels[cat] || cat} лид — ${score}/10* — ${reason}\\n\\n`\n  : '';\nconst text = `${header}👤 *${d.name}*\\n📞 \\`${d.phone}\\`\\n✉️ ${d.email}\\n💬 ${d.message}\\n📍 ${d.source || d.sourse || ''} · 💰 ${d.budget || ''}\\n🕐 ${ts}`;\nconst senior_budgets = ['$5000+', '$1500-$5000'];\nconst isSenior = (cat === 'hot') || senior_budgets.includes(d.budget);\nconst routed_to = isSenior ? 'senior' : 'junior';\nconsole.log('FormatMessage done, cat:', cat, 'score:', score, 'routed_to:', routed_to);\nreturn [{ json: { ...d, telegramText: text, routed_to } }];"
+      }
+    },
+    {
+      "id": "node-route",
+      "name": "Route By Tier",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [2650, 500],
+      "parameters": {
+        "rules": {
+          "values": [
+            { "outputKey": "senior", "renameOutput": true, "conditions": { "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" }, "combinator": "and", "conditions": [ { "id": "rule-senior-001", "operator": { "type": "string", "operation": "equals" }, "leftValue": "={{ $json.routed_to }}", "rightValue": "senior" } ] } },
+            { "outputKey": "junior", "renameOutput": true, "conditions": { "options": { "version": 2, "leftValue": "", "caseSensitive": true, "typeValidation": "loose" }, "combinator": "and", "conditions": [ { "id": "rule-junior-001", "operator": { "type": "string", "operation": "equals" }, "leftValue": "={{ $json.routed_to }}", "rightValue": "junior" } ] } }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node-telegram-senior",
+      "name": "Send Senior",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2900, 400],
+      "credentials": { "telegramApi": { "id": "zQbslAZbcF6pqKFh", "name": "Telegram account" } },
+      "parameters": {
+        "resource": "message", "operation": "sendMessage",
+        "chatId": "={{ $('Load Config').first().json.senior_chat_id }}",
+        "text": "={{ $json.telegramText }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": { "rows": [ { "row": { "buttons": [
+          { "text": "🟢 Взять", "additionalFields": { "callback_data": "={{ 'lead_' + $json.row_number + '_taken' }}" } },
+          { "text": "⚙️ В работе", "additionalFields": { "callback_data": "={{ 'lead_' + $json.row_number + '_in_progress' }}" } },
+          { "text": "✅ Завершено", "additionalFields": { "callback_data": "={{ 'lead_' + $json.row_number + '_done' }}" } }
+        ] } } ] },
+        "additionalFields": { "appendAttribution": false, "parse_mode": "Markdown" }
+      }
+    },
+    {
+      "id": "node-telegram",
+      "name": "Send Junior",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2900, 600],
+      "credentials": { "telegramApi": { "id": "zQbslAZbcF6pqKFh", "name": "Telegram account" } },
+      "parameters": {
+        "resource": "message", "operation": "sendMessage",
+        "chatId": "={{ $('Load Config').first().json.junior_chat_id }}",
+        "text": "={{ $json.telegramText }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": { "rows": [ { "row": { "buttons": [
+          { "text": "🟢 Взять", "additionalFields": { "callback_data": "={{ 'lead_' + $json.row_number + '_taken' }}" } },
+          { "text": "⚙️ В работе", "additionalFields": { "callback_data": "={{ 'lead_' + $json.row_number + '_in_progress' }}" } },
+          { "text": "✅ Завершено", "additionalFields": { "callback_data": "={{ 'lead_' + $json.row_number + '_done' }}" } }
+        ] } } ] },
+        "additionalFields": { "appendAttribution": false, "parse_mode": "Markdown" }
+      }
+    },
+    {
+      "id": "node-write",
+      "name": "Write Telegram IDs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [3150, 500],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "vPYba8prk7sfff5g", "name": "Google Sheets account" } },
+      "parameters": {
+        "resource": "sheet", "operation": "update",
+        "documentId": { "__rl": true, "mode": "id", "value": "1cNcXDPgsVdgmtrnBr6NLNJsyEO3Zhrt5eHvcmJqPpAk", "cachedResultName": "Lead Automation Sheets" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "leads", "cachedResultName": "leads" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": ["row_number"],
+          "value": {
+            "row_number": "={{ $('Check Duplicate').first().json.row_number }}",
+            "telegram_message_id": "={{ $json.result.message_id }}",
+            "telegram_chat_id": "={{ $('Format Message').first().json.routed_to === 'senior' ? $('Load Config').first().json.senior_chat_id : $('Load Config').first().json.junior_chat_id }}",
+            "status": "new",
+            "created_at": "={{ new Date().toISOString() }}",
+            "updated_at": "={{ new Date().toISOString() }}",
+            "score": "={{ $('Parse AI Response').first().json.score }}",
+            "category": "={{ $('Parse AI Response').first().json.category }}",
+            "reason": "={{ $('Parse AI Response').first().json.reason }}",
+            "routed_to": "={{ $('Format Message').first().json.routed_to }}"
+          },
+          "schema": [
+            { "id": "row_number", "type": "number", "display": true, "required": false, "displayName": "row_number", "defaultMatch": true, "canBeUsedToMatch": true },
+            { "id": "telegram_message_id", "type": "string", "display": true, "required": false, "displayName": "telegram_message_id", "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "telegram_chat_id", "type": "string", "display": true, "required": false, "displayName": "telegram_chat_id", "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "status", "type": "string", "display": true, "required": false, "displayName": "status", "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "created_at", "type": "string", "display": true, "required": false, "displayName": "created_at", "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "updated_at", "type": "string", "display": true, "required": false, "displayName": "updated_at", "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "score", "type": "number", "display": true, "required": false, "displayName": "score", "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "category", "type": "string", "display": true, "required": false, "displayName": "category", "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "reason", "type": "string", "display": true, "required": false, "displayName": "reason", "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "routed_to", "type": "string", "display": true, "required": false, "displayName": "routed_to", "defaultMatch": false, "canBeUsedToMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Sheets Trigger": { "main": [[{ "node": "Load Config", "type": "main", "index": 0 }]] },
+    "Load Config": { "main": [[{ "node": "Validate Fields", "type": "main", "index": 0 }]] },
+    "Validate Fields": { "main": [[{ "node": "Normalize", "type": "main", "index": 0 }]] },
+    "Normalize": { "main": [[{ "node": "Get All Rows", "type": "main", "index": 0 }, { "node": "Split Leads", "type": "main", "index": 0 }]] },
+    "Split Leads": { "main": [[], [{ "node": "Check Duplicate", "type": "main", "index": 0 }]] },
+    "Check Duplicate": { "main": [[{ "node": "Is Duplicate", "type": "main", "index": 0 }]] },
+    "Is Duplicate": { "main": [[{ "node": "Skip Duplicate", "type": "main", "index": 0 }], [{ "node": "Qualify Lead", "type": "main", "index": 0 }]] },
+    "Skip Duplicate": { "main": [[{ "node": "Split Leads", "type": "main", "index": 0 }]] },
+    "Qualify Lead": { "main": [[{ "node": "Parse AI Response", "type": "main", "index": 0 }]] },
+    "Parse AI Response": { "main": [[{ "node": "Format Message", "type": "main", "index": 0 }]] },
+    "Format Message": { "main": [[{ "node": "Route By Tier", "type": "main", "index": 0 }]] },
+    "Route By Tier": { "main": [[{ "node": "Send Senior", "type": "main", "index": 0 }], [{ "node": "Send Junior", "type": "main", "index": 0 }]] },
+    "Send Senior": { "main": [[{ "node": "Write Telegram IDs", "type": "main", "index": 0 }]] },
+    "Send Junior": { "main": [[{ "node": "Write Telegram IDs", "type": "main", "index": 0 }]] },
+    "Write Telegram IDs": { "main": [[{ "node": "Split Leads", "type": "main", "index": 0 }]] }
+  }
+}

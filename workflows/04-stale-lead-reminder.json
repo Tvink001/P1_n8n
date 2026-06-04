@@ -1,0 +1,158 @@
+{
+  "name": "04 — Stale Lead Reminder",
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "executionTimeout": 300,
+    "errorWorkflow": "xUPMrswt8FvHxKYU"
+  },
+  "nodes": [
+    {
+      "id": "node-cron",
+      "name": "Cron Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [200, 300],
+      "parameters": {
+        "rule": { "interval": [{ "field": "minutes", "minutesInterval": 15 }] }
+      }
+    },
+    {
+      "id": "node-config",
+      "name": "Load Config",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [450, 300],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "vPYba8prk7sfff5g", "name": "Google Sheets account" } },
+      "parameters": {
+        "resource": "sheet", "operation": "read",
+        "documentId": { "__rl": true, "mode": "id", "value": "1cNcXDPgsVdgmtrnBr6NLNJsyEO3Zhrt5eHvcmJqPpAk", "cachedResultName": "Lead Automation Sheets" },
+        "sheetName": { "__rl": true, "mode": "name", "value": "_config", "cachedResultName": "_config" },
+        "range": "A:F", "options": {}
+      }
+    },
+    {
+      "id": "node-get-leads",
+      "name": "Get All Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [700, 300],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "vPYba8prk7sfff5g", "name": "Google Sheets account" } },
+      "parameters": {
+        "resource": "sheet", "operation": "read",
+        "documentId": { "__rl": true, "mode": "id", "value": "1cNcXDPgsVdgmtrnBr6NLNJsyEO3Zhrt5eHvcmJqPpAk", "cachedResultName": "Lead Automation Sheets" },
+        "sheetName": { "__rl": true, "mode": "id", "value": "589358449", "cachedResultName": "leads" },
+        "range": "A:R", "options": {}
+      }
+    },
+    {
+      "id": "node-filter",
+      "name": "Filter Stale",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [950, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "console.log('FilterStale start');\nconst config = $('Load Config').first().json;\nconst thresholdMin = Number(config.reminder_threshold_minutes) || 30;\nconst cutoff = Date.now() - thresholdMin * 60 * 1000;\nconst stale = $input.all().filter(r => {\n  const row = r.json;\n  if (row.status !== 'new') return false;\n  if (!row.created_at) return false;\n  if (row.reminder_sent_at && String(row.reminder_sent_at).trim() !== '') return false;\n  const created = new Date(row.created_at).getTime();\n  if (!Number.isFinite(created)) return false;\n  return created < cutoff;\n}).map(r => ({ json: r.json }));\nconsole.log('FilterStale done, threshold:', thresholdMin, 'min, count:', stale.length);\nreturn stale;"
+      }
+    },
+    {
+      "id": "node-split",
+      "name": "Split In Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [1200, 300],
+      "parameters": { "batchSize": 1, "options": {} }
+    },
+    {
+      "id": "node-build",
+      "name": "Build Reminder",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1450, 400],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "console.log('BuildReminder start');\nconst lead = $input.first().json;\nconst config = $('Load Config').first().json;\nconst routed = lead.routed_to || 'junior'; // fallback per OQ-13\nconst chatId = routed === 'senior' ? config.senior_chat_id : config.junior_chat_id;\nconst manager = String(config.manager_list || '').split(',')[0].trim() || 'manager';\nconst rowId = lead.row_number;\nconst thresholdMin = Number(config.reminder_threshold_minutes) || 30;\nconst msg = `⏰ @${manager} — лид ${lead.name} ждёт >${thresholdMin} мин, возьмёт кто-то?\\n📞 ${lead.phone} · 💰 ${lead.budget || 'н/д'}`;\nconsole.log('BuildReminder done, chatId:', chatId, 'rowId:', rowId, 'manager:', manager);\nreturn [{ json: { ...lead, reminderChatId: String(chatId), reminderMsg: msg, rowId } }];"
+      }
+    },
+    {
+      "id": "node-send",
+      "name": "Send Reminder",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1700, 400],
+      "credentials": { "telegramApi": { "id": "zQbslAZbcF6pqKFh", "name": "Telegram account" } },
+      "parameters": {
+        "resource": "message", "operation": "sendMessage",
+        "chatId": "={{ $json.reminderChatId }}",
+        "text": "={{ $json.reminderMsg }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            { "row": { "buttons": [
+              { "text": "🟢 Взять", "additionalFields": { "callback_data": "={{ 'lead_' + $json.rowId + '_taken' }}" } },
+              { "text": "⚙️ В работе", "additionalFields": { "callback_data": "={{ 'lead_' + $json.rowId + '_in_progress' }}" } },
+              { "text": "✅ Завершено", "additionalFields": { "callback_data": "={{ 'lead_' + $json.rowId + '_done' }}" } }
+            ] } }
+          ]
+        },
+        "additionalFields": { "appendAttribution": false, "parse_mode": "Markdown" }
+      }
+    },
+    {
+      "id": "node-wait",
+      "name": "Wait",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1950, 400],
+      "parameters": { "amount": 1, "unit": "seconds" }
+    },
+    {
+      "id": "node-mark",
+      "name": "Mark Reminded",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [2200, 400],
+      "credentials": { "googleSheetsOAuth2Api": { "id": "vPYba8prk7sfff5g", "name": "Google Sheets account" } },
+      "parameters": {
+        "resource": "sheet", "operation": "update",
+        "documentId": { "__rl": true, "mode": "id", "value": "1cNcXDPgsVdgmtrnBr6NLNJsyEO3Zhrt5eHvcmJqPpAk", "cachedResultName": "Lead Automation Sheets" },
+        "sheetName": { "__rl": true, "mode": "id", "value": "589358449", "cachedResultName": "leads" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": ["row_number"],
+          "value": {
+            "row_number": "={{ $('Build Reminder').first().json.rowId }}",
+            "reminder_sent_at": "={{ new Date().toISOString() }}"
+          },
+          "schema": [
+            { "id": "row_number", "type": "number", "display": true, "required": false, "displayName": "row_number", "defaultMatch": true, "canBeUsedToMatch": true },
+            { "id": "reminder_sent_at", "type": "string", "display": true, "required": false, "displayName": "reminder_sent_at", "defaultMatch": false, "canBeUsedToMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Cron Trigger": { "main": [[{ "node": "Load Config", "type": "main", "index": 0 }]] },
+    "Load Config": { "main": [[{ "node": "Get All Leads", "type": "main", "index": 0 }]] },
+    "Get All Leads": { "main": [[{ "node": "Filter Stale", "type": "main", "index": 0 }]] },
+    "Filter Stale": { "main": [[{ "node": "Split In Batches", "type": "main", "index": 0 }]] },
+    "Split In Batches": {
+      "main": [
+        [],
+        [{ "node": "Build Reminder", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Reminder": { "main": [[{ "node": "Send Reminder", "type": "main", "index": 0 }]] },
+    "Send Reminder": { "main": [[{ "node": "Wait", "type": "main", "index": 0 }]] },
+    "Wait": { "main": [[{ "node": "Mark Reminded", "type": "main", "index": 0 }]] },
+    "Mark Reminded": { "main": [[{ "node": "Split In Batches", "type": "main", "index": 0 }]] }
+  }
+}

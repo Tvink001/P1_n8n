@@ -1,0 +1,213 @@
+{
+  "name": "02 — Callback Handler",
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "none",
+    "saveManualExecutions": false,
+    "executionTimeout": 300
+  },
+  "nodes": [
+    {
+      "id": "node-trigger",
+      "name": "Telegram Trigger",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.3,
+      "position": [200, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "zQbslAZbcF6pqKFh",
+          "name": "Telegram account"
+        }
+      },
+      "parameters": {
+        "updates": ["callback_query"],
+        "additionalFields": {}
+      }
+    },
+    {
+      "id": "node-parse",
+      "name": "Parse Callback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "console.log('ParseCallback start');\nconst cb = $input.first().json;\nconst data = cb.callback_query?.data || '';\nconst queryId = cb.callback_query?.id || '';\nconst username = cb.callback_query?.from?.username || 'unknown';\nconst parts = data.split('_'); // lead_{rowId}_{action} — action may contain underscores (in_progress)\nif (parts[0] !== 'lead' || parts.length < 3) throw new Error('Invalid callback_data: ' + data);\nconst allowed = ['taken', 'in_progress', 'done'];\nconst action = parts.slice(2).join('_');\nif (!allowed.includes(action)) throw new Error('Invalid action: ' + action);\nconst rowId = Number(parts[1]);\nif (!Number.isFinite(rowId)) throw new Error('Invalid rowId: ' + parts[1]);\nconsole.log('ParseCallback done:', rowId, action, username);\nreturn [{ json: { rowId, action, queryId, username } }];"
+      }
+    },
+    {
+      "id": "node-get-rows",
+      "name": "Get All Rows",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [700, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "vPYba8prk7sfff5g",
+          "name": "Google Sheets account"
+        }
+      },
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1cNcXDPgsVdgmtrnBr6NLNJsyEO3Zhrt5eHvcmJqPpAk",
+          "cachedResultName": "Lead Automation Sheets"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "leads",
+          "cachedResultName": "leads"
+        },
+        "range": "A:R",
+        "options": {}
+      }
+    },
+    {
+      "id": "node-prepare",
+      "name": "Prepare Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [950, 300],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "console.log('PrepareUpdate start');\nconst { rowId, action, queryId, username } = $('Parse Callback').first().json;\nconst rows = $input.all();\nconst lead = rows.find(r => Number(r.json.row_number) === Number(rowId))?.json;\nif (!lead) throw new Error('Lead row not found for rowId: ' + rowId);\n\nconst labels = { taken: 'Взято', in_progress: 'В работе', done: 'Завершено' };\nconst icons = { taken: '🟢', in_progress: '⚙️', done: '✅' };\nconst ts = new Date(lead.timestamp).toLocaleString('ru-RU', { timeZone: 'Europe/Kyiv' });\n\n// Optional AI header (empty in minimal build before Prompt 6)\nconst catIcons = { hot: '🔥', warm: '🟡', cold: '⚪' };\nconst header = (Number(lead.score) > 0)\n  ? `${catIcons[lead.category] || '⚪'} *${lead.category} лид — ${lead.score}/10* — ${lead.reason}\\n\\n`\n  : '';\n\nconst base = `${header}👤 *${lead.name}*\\n📞 \\`${lead.phone}\\`\\n✉️ ${lead.email}\\n💬 ${lead.message}\\n📍 ${lead.sourse || lead.source || ''} · 💰 ${lead.budget || ''}\\n🕐 ${ts}`;\nconst editedText = base + `\\n\\n${icons[action]} ${labels[action]}: @${username}`;\n\nconsole.log('PrepareUpdate done:', rowId, action);\nreturn [{ json: { rowId, action, queryId, username, editedText, status: action,\n  telegramChatId: String(lead.telegram_chat_id), telegramMessageId: String(lead.telegram_message_id),\n  updatedAt: new Date().toISOString() } }];"
+      }
+    },
+    {
+      "id": "node-update",
+      "name": "Update Status",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [1200, 300],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "vPYba8prk7sfff5g",
+          "name": "Google Sheets account"
+        }
+      },
+      "parameters": {
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "1cNcXDPgsVdgmtrnBr6NLNJsyEO3Zhrt5eHvcmJqPpAk",
+          "cachedResultName": "Lead Automation Sheets"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "leads",
+          "cachedResultName": "leads"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": ["row_number"],
+          "value": {
+            "row_number": "={{ $json.rowId }}",
+            "status": "={{ $json.status }}",
+            "assigned_to": "={{ $json.username }}",
+            "updated_at": "={{ $json.updatedAt }}"
+          },
+          "schema": [
+            { "id": "row_number", "type": "number", "display": true, "required": false, "displayName": "row_number", "defaultMatch": true, "canBeUsedToMatch": true },
+            { "id": "status", "type": "string", "display": true, "required": false, "displayName": "status", "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "assigned_to", "type": "string", "display": true, "required": false, "displayName": "assigned_to", "defaultMatch": false, "canBeUsedToMatch": false },
+            { "id": "updated_at", "type": "string", "display": true, "required": false, "displayName": "updated_at", "defaultMatch": false, "canBeUsedToMatch": false }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "node-edit",
+      "name": "Edit Message Text",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1450, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "zQbslAZbcF6pqKFh",
+          "name": "Telegram account"
+        }
+      },
+      "parameters": {
+        "resource": "message",
+        "operation": "editMessageText",
+        "messageType": "message",
+        "chatId": "={{ $('Prepare Update').first().json.telegramChatId }}",
+        "messageId": "={{ $('Prepare Update').first().json.telegramMessageId }}",
+        "text": "={{ $('Prepare Update').first().json.editedText }}",
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  { "text": "🟢 Взять", "additionalFields": { "callback_data": "={{ 'lead_' + $('Parse Callback').first().json.rowId + '_taken' }}" } },
+                  { "text": "⚙️ В работе", "additionalFields": { "callback_data": "={{ 'lead_' + $('Parse Callback').first().json.rowId + '_in_progress' }}" } },
+                  { "text": "✅ Завершено", "additionalFields": { "callback_data": "={{ 'lead_' + $('Parse Callback').first().json.rowId + '_done' }}" } }
+                ]
+              }
+            }
+          ]
+        },
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "appendAttribution": false
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "node-answer",
+      "name": "Answer Callback Query",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1700, 300],
+      "credentials": {
+        "telegramApi": {
+          "id": "zQbslAZbcF6pqKFh",
+          "name": "Telegram account"
+        }
+      },
+      "parameters": {
+        "resource": "callback",
+        "operation": "answerQuery",
+        "queryId": "={{ $('Prepare Update').first().json.queryId }}",
+        "additionalFields": {
+          "text": "",
+          "show_alert": false
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Telegram Trigger": {
+      "main": [[{ "node": "Parse Callback", "type": "main", "index": 0 }]]
+    },
+    "Parse Callback": {
+      "main": [[{ "node": "Get All Rows", "type": "main", "index": 0 }]]
+    },
+    "Get All Rows": {
+      "main": [[{ "node": "Prepare Update", "type": "main", "index": 0 }]]
+    },
+    "Prepare Update": {
+      "main": [[{ "node": "Update Status", "type": "main", "index": 0 }]]
+    },
+    "Update Status": {
+      "main": [[{ "node": "Edit Message Text", "type": "main", "index": 0 }]]
+    },
+    "Edit Message Text": {
+      "main": [[{ "node": "Answer Callback Query", "type": "main", "index": 0 }]]
+    }
+  }
+}
