@@ -8,9 +8,11 @@ A four-workflow n8n Cloud system that ingests Google Form leads, validates and d
 
 ## Demo
 
-![demo](docs/screenshots/demo.gif)
+![30-second flow](docs/screenshots/demo.gif)
 
-*30-second screen capture: form submit → Telegram message arrives with AI-scored header → manager taps "Взять" → status updates in Google Sheet, Telegram message edits in place.*
+*Form submit → Telegram message arrives with AI-scored header → manager taps "Взять" → status updates in Google Sheet, Telegram message edits in place.*
+
+🎥 **Walkthrough video:** [VIDEO_URL]
 
 ---
 
@@ -67,18 +69,15 @@ lead-automation/
 │   ├── 03-error-alerts.json
 │   └── 04-stale-lead-reminder.json
 ├── docs/
-│   ├── architecture.md                 # how the system works, for case-study viewers
+│   ├── architecture.md                 # how the system works
 │   ├── google-sheets-schema.md         # column-by-column reference for all 3 Sheet tabs
 │   └── screenshots/                    # README assets including demo.gif
 ├── scripts/
 │   └── apps-script-webhook.gs          # optional Apps Script bridge (drafted, not deployed)
-├── .mcp.json                           # n8n-MCP + Context7 MCP server config (gitignored)
 ├── .env.example                        # required env vars with comments
 ├── .gitignore
 ├── README.md
-├── CLAUDE.md                           # AI development partner instructions
-├── project_specs.md                    # technical specification (single source of truth)
-└── learnings.md                        # running log of project-specific gotchas + patterns
+└── LICENSE
 ```
 
 ---
@@ -101,7 +100,7 @@ lead-automation/
 ## Competencies Demonstrated
 
 - **Agentic architecture** — four workflows, each with a single responsibility, wired together by callback contracts (`callback_data` format `lead_{rowId}_{action}`) and a shared Sheet for state. The Telegram-message-ID linkage between WF01 (send) and WF02 (edit) is the most subtle part of the design and is documented as such.
-- **Tool design** — every workflow built and modified through n8n-MCP using `n8n_create_workflow` + `n8n_update_partial_workflow` with diff operations, never by dictating UI clicks. Validation gates (`n8n_validate_workflow` + `n8n_autofix_workflow`) and runtime gates (`n8n_test_workflow` + `n8n_executions` inspection) bracket every change.
+- **Workflow craft** — each workflow is single-responsibility, version-controlled as JSON in `workflows/`, validated against n8n's runtime contract before deploy, and smoke-tested with real callbacks. The callback contract (`callback_data` format `lead_{rowId}_{action}`) is the API between WF01 (sender) and WF02 (handler) and is documented in `docs/architecture.md`.
 - **Context & reliability** — error handling via dedicated WF03 with payload sanitization, idempotent loops with write-after-success guards, fail-soft AI integration that never blocks a real lead, and a `_config` sheet as the runtime knob for routing thresholds + reminder timing.
 - **AI integration** — Anthropic Claude Haiku 4.5 with deterministic JSON output (`temperature: 0`, hard `max_tokens` cap), defensive JSON parsing with strip-fences-then-parse-then-fallback, bilingual prompt cues to handle Cyrillic intent words correctly, and cost-monitored to stay under $0.001 per qualification.
 
