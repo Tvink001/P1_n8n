@@ -31,17 +31,19 @@ A four-workflow n8n Cloud system that ingests Google Form leads, validates and d
 ```mermaid
 flowchart LR
     Form[Google Form] --> Sheet[(Google Sheets)]
-    Sheet -. poll .-> WF01[WF01<br/>New Lead Processing]
-    WF01 -->|Claude Haiku qualify| WF01
-    WF01 -->|hot OR mid+high budget| TS[Telegram: Seniors]
-    WF01 -->|warm/cold + low budget| TJ[Telegram: Juniors]
-    TS -.callback.-> WF02[WF02<br/>Callback Handler]
-    TJ -.callback.-> WF02
+    Sheet -. poll .-> WF01[WF01 New Lead Processing]
+    WF01 -->|qualify with Haiku 4.5| WF01
+    WF01 -->|hot or mid+high budget| TS[Telegram Seniors]
+    WF01 -->|warm or cold + low budget| TJ[Telegram Juniors]
+    TS -. callback .-> WF02[WF02 Callback Handler]
+    TJ -. callback .-> WF02
     WF02 --> Sheet
-    Cron((15-min cron)) --> WF04[WF04<br/>Stale Lead Reminder]
-    WF04 -->|@mention| TS
-    WF04 -->|@mention| TJ
-    WF01 & WF02 & WF04 -. on error .-> WF03[WF03<br/>Error Alerts]
+    Cron((15-min cron)) --> WF04[WF04 Stale Lead Reminder]
+    WF04 -->|mention| TS
+    WF04 -->|mention| TJ
+    WF01 -. on error .-> WF03[WF03 Error Alerts]
+    WF02 -. on error .-> WF03
+    WF04 -. on error .-> WF03
     WF03 --> Inbox[Operator Inbox]
 ```
 
