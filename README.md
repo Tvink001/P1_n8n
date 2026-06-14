@@ -8,11 +8,11 @@ A four-workflow n8n Cloud system that ingests Google Form leads, validates and d
 
 ## Demo
 
-![30-second flow](docs/screenshots/demo.gif)
+[![Watch the walkthrough](https://img.shields.io/badge/Watch_the_walkthrough-Loom-625df5?logo=loom&logoColor=white)](https://www.loom.com/share/8cf0cf463db848ac9ef6144b2f3c801f)
 
-*Form submit → Telegram message arrives with AI-scored header → manager taps "Взять" → status updates in Google Sheet, Telegram message edits in place.*
+*Form submit → Telegram alert with an AI-scored header → manager taps "Claim" → status updates in the Google Sheet, and the message edits in place.*
 
-🎥 **Walkthrough video:** [VIDEO_URL]
+🎥 **Walkthrough:** https://www.loom.com/share/8cf0cf463db848ac9ef6144b2f3c801f
 
 ---
 
